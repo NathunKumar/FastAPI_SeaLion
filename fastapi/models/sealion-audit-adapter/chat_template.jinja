@@ -1,0 +1,406 @@
+{%- macro render_typescript_type(param_spec, required_params, is_nullable=false) -%}
+  {%- if param_spec.type == "array" -%}
+    {%- if param_spec["items"] -%}
+      {%- if param_spec["items"]["type"] == "string" -%}
+        {{- "string[]" -}}
+      {%- elif param_spec["items"]["type"] == "number" -%}
+        {{- "number[]" -}}
+      {%- elif param_spec["items"]["type"] == "integer" -%}
+        {{- "number[]" -}}
+      {%- elif param_spec["items"]["type"] == "boolean" -%}
+        {{- "boolean[]" -}}
+      {%- else -%}
+        {%- set inner_type = render_typescript_type(param_spec["items"], required_params) -%}
+        {%- if inner_type == "object | object" or inner_type|length > 50 -%}
+          {{- "any[]" -}}
+        {%- else -%}
+          {{- inner_type ~ "[]" -}}
+        {%- endif -%}
+      {%- endif -%}
+
+      {%- if param_spec.nullable -%}
+        {{- " | null" -}}
+      {%- endif -%}
+    {%- else -%}
+      {{- "any[]" -}}
+      {%- if param_spec.nullable -%}
+        {{- " | null" -}}
+      {%- endif -%}
+    {%- endif -%}
+
+  {%- elif param_spec.type is defined
+      and param_spec.type is iterable
+      and param_spec.type is not string
+      and param_spec.type is not mapping
+      and param_spec.type[0] is defined -%}
+    {%- if param_spec.type | length > 1 -%}
+      {{- param_spec.type | join(" | ") -}}
+    {%- else -%}
+      {{- param_spec.type[0] -}}
+    {%- endif -%}
+
+  {%- elif param_spec.oneOf is defined -%}
+    {%- set has_object_variants = false -%}
+    {%- for variant in param_spec.oneOf -%}
+      {%- if variant.type == "object" -%}
+        {%- set has_object_variants = true -%}
+      {%- endif -%}
+    {%- endfor -%}
+
+    {%- if has_object_variants and param_spec.oneOf|length > 1 -%}
+      {{- "any" -}}
+    {%- else -%}
+      {%- for variant in param_spec.oneOf -%}
+        {{- render_typescript_type(variant, required_params) -}}
+        {%- if variant.description is defined -%}
+          {{- "// " ~ variant.description -}}
+        {%- endif -%}
+        {%- if variant.default is defined -%}
+          {{- "// default: " ~ variant.default|tojson -}}
+        {%- endif -%}
+        {%- if not loop.last -%}
+          {{- " | " -}}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endif -%}
+
+  {%- elif param_spec.type == "string" -%}
+    {%- if param_spec.enum is defined -%}
+      {{- '"' ~ param_spec.enum|join('" | "') ~ '"' -}}
+    {%- else -%}
+      {{- "string" -}}
+      {%- if param_spec.nullable is defined and param_spec.nullable -%}
+        {{- " | null" -}}
+      {%- endif -%}
+    {%- endif -%}
+
+  {%- elif param_spec.type == "number" -%}
+    {{- "number" -}}
+
+  {%- elif param_spec.type == "integer" -%}
+    {{- "number" -}}
+
+  {%- elif param_spec.type == "boolean" -%}
+    {{- "boolean" -}}
+
+  {%- elif param_spec.type == "object" -%}
+    {%- if param_spec.properties is defined -%}
+      {{- "{\n" -}}
+      {%- for prop_name, prop_spec in param_spec.properties.items() -%}
+        {{- prop_name -}}
+        {%- if prop_name not in (param_spec.required or []) -%}
+          {{- "?" -}}
+        {%- endif -%}
+        {{- ": " -}}
+        {{- render_typescript_type(prop_spec, param_spec.required or []) -}}
+        {%- if not loop.last -%}
+          {{- ", " -}}
+        {%- endif -%}
+      {%- endfor -%}
+      {{- "}" -}}
+    {%- else -%}
+      {{- "object" -}}
+    {%- endif -%}
+
+  {%- else -%}
+    {{- "any" -}}
+  {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_tools(tools) -%}
+  {%- for tool in tools -%}
+    {%- set tool_name = tool.name if tool.name is defined else tool.function.name -%}
+    {%- set tool_desc = tool.description if tool.description is defined else tool.function.description -%}
+    {%- set tool_params = tool.parameters if tool.parameters is defined else tool.function.parameters -%}
+
+    {{- "// " ~ tool_desc ~ "\n" -}}
+    {{- "type " ~ tool_name ~ " = " -}}
+
+    {%- if tool_params is defined and tool_params.properties is defined and tool_params.properties|length > 0 -%}
+      {{- "(_: {\n" -}}
+      {%- for param_name, param_spec in tool_params.properties.items() -%}
+        {%- if param_spec.description is defined -%}
+          {{- "// " ~ param_spec.description ~ "\n" -}}
+        {%- endif -%}
+
+        {{- param_name -}}
+        {%- if param_name not in (tool_params.required or []) -%}
+          {{- "?" -}}
+        {%- endif -%}
+        {{- ": " -}}
+        {{- render_typescript_type(param_spec, tool_params.required or []) -}}
+
+        {%- if param_spec.default is defined -%}
+          {%- if param_spec.enum is defined -%}
+            {{- ", // default: " ~ param_spec.default -}}
+          {%- elif param_spec.oneOf is defined -%}
+            {{- "// default: " ~ param_spec.default -}}
+          {%- else -%}
+            {{- ", // default: " ~ param_spec.default|tojson -}}
+          {%- endif -%}
+        {%- endif -%}
+
+        {%- if not loop.last -%}
+          {{- ",\n" -}}
+        {%- else -%}
+          {{- "\n" -}}
+        {%- endif -%}
+      {%- endfor -%}
+      {{- "}) => any;" -}}
+    {%- else -%}
+      {{- "() => any;" -}}
+    {%- endif -%}
+
+    {%- if not loop.last -%}
+      {{- "\n" -}}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_tools_json(tools) -%}
+  <tools>
+  {%- for tool in tools -%}
+{{- tool | tojson -}}
+{{- "\n" -}}
+  {%- endfor -%}
+  </tools>
+{%- endmacro -%}
+
+{# ============================== preamble / tokens ============================== #}
+
+{{- bos_token -}}
+
+{%- set system_token = "<|system_start|>" -%}
+{%- set end_system_token = "<|system_end|>" -%}
+{%- set developer_token = "<|developer_start|>" -%}
+{%- set end_developer_token = "<|developer_end|>" -%}
+{%- set user_token = "<|user_start|>" -%}
+{%- set end_user_token = "<|user_end|>" -%}
+{%- set assistant_token = "<|assistant_start|>" -%}
+{%- set end_assistant_token = "<|assistant_end|>" -%}
+{%- set inner_token = "<|inner_prefix|>" -%}
+{%- set outer_token = "<|inner_suffix|>" -%}
+{%- set image_token = "<|image|>" -%}
+
+{%- set ns = namespace(
+  in_assistant=false,
+  in_inner=false,
+  waiting_for_tool_outputs=false,
+  assistant_format=none,
+  has_system=false,
+  in_tool_group=false
+) -%}
+
+{# ============================== system (now also contains tools) ============================== #}
+
+{%- if messages and messages[0].role == "system" -%}
+  {%- set ns.has_system = true -%}
+{%- endif -%}
+
+{%- if ns.has_system or (tools is defined and tools) -%}
+  {{- system_token -}}
+
+  {%- if ns.has_system -%}
+    {%- if "content" in messages[0] -%}
+      {%- if messages[0].content is string -%}
+        {{- messages[0].content -}}
+      {%- elif messages[0].content is mapping and "text" in messages[0].content -%}
+        {{- messages[0].content.text -}}
+      {%- else -%}
+        {{- raise_exception("Invalid system message") -}}
+      {%- endif -%}
+    {%- else -%}
+      {{- raise_exception("Invalid system message") -}}
+    {%- endif -%}
+  {%- endif -%}
+
+  {%- if tools is defined and tools -%}
+    {%- if ns.has_system -%}
+      {{- "\n\n" -}}
+    {%- endif -%}
+# Tools
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+{{- render_tools_json(tools) -}}
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+  {%- endif -%}
+
+  {{- end_system_token -}}
+{%- endif -%}
+
+{%- set loop_messages = messages[1:] if ns.has_system else messages -%}
+
+{# ============================== optional developer preamble (kept) ============================== #}
+
+{%- if enable_thinking is defined and enable_thinking -%}
+  {{- developer_token ~ "Deliberation: enabled" ~ end_developer_token -}}
+{%- endif -%}
+
+{# ============================== main loop ============================== #}
+
+{%- for message in loop_messages -%}
+
+  {# -------- tool messages -> rendered as USER turns with <tool_response> tags -------- #}
+  {%- if message.role == "tool" -%}
+
+    {%- if ns.in_assistant -%}
+      {{- end_assistant_token -}}
+      {%- set ns.in_assistant = false -%}
+    {%- endif -%}
+
+    {%- if not ns.in_tool_group -%}
+      {{- user_token -}}
+      {%- set ns.in_tool_group = true -%}
+    {%- endif -%}
+
+<tool_response>
+{{- message.content -}}
+</tool_response>
+
+    {%- set next_is_tool = (not loop.last) and (loop_messages[loop.index0 + 1].role == "tool") -%}
+    {%- if not next_is_tool -%}
+      {{- end_user_token -}}
+      {%- set ns.in_tool_group = false -%}
+      {%- set ns.waiting_for_tool_outputs = false -%}
+    {%- endif -%}
+
+  {# -------- user messages -------- #}
+  {%- elif message.role == "user" -%}
+
+    {%- set ns.in_inner = false -%}
+
+    {%- if ns.in_assistant -%}
+      {{- end_assistant_token -}}
+      {%- set ns.in_assistant = false -%}
+    {%- endif -%}
+
+    {{- user_token -}}
+    {%- if "content" in message -%}
+      {%- if message.content is string -%}
+        {{- message.content -}}
+      {%- elif message.content is mapping and "parts" in message.content -%}
+        {%- for part in message.content.parts -%}
+          {%- if part.type == "text" -%}
+            {{- part.text -}}
+          {%- elif part.type == "image" -%}
+            {{- image_token -}}
+          {%- else -%}
+            {{- raise_exception("Invalid user part: " ~ part.type) -}}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- else -%}
+        {{- raise_exception("Invalid user message") -}}
+      {%- endif -%}
+    {%- endif -%}
+    {{- end_user_token -}}
+
+  {# -------- assistant messages (emit <tool_call> tags) -------- #}
+  {%- elif message.role == "assistant" -%}
+
+    {%- if not ns.in_assistant -%}
+      {{- assistant_token -}}
+      {%- set ns.in_assistant = true -%}
+    {%- endif -%}
+
+    {%- if "content" in message and message.content -%}
+      {%- if message.content is string and (ns.assistant_format is none or ns.assistant_format == "string") -%}
+        {%- set ns.assistant_format = "string" -%}
+        {{- message.content -}}
+
+      {%- elif message.content is mapping and "blocks" in message.content and (ns.assistant_format is none or ns.assistant_format == "mapping") -%}
+        {%- set ns.assistant_format = "mapping" -%}
+
+        {%- for block in message.content.blocks -%}
+
+          {%- if block.type == "thoughts" -%}
+            {%- if not ns.in_inner -%}
+              {%- set ns.in_inner = true -%}
+              {{- inner_token -}}
+            {%- endif -%}
+            {{- block.text -}}
+
+          {%- elif block.type == "tool_calls" -%}
+            {%- if ns.in_inner and not loop.first and block.calls|length == 1 and block.calls[0].name == "display_answers" -%}
+              {%- set ns.in_inner = false -%}
+              {{- outer_token -}}
+            {%- endif -%}
+
+            {%- for tc in block.calls -%}
+              {{- "\n<tool_call>\n{\"name\": \"" ~ tc.name ~ "\", \"arguments\": " -}}
+              {%- if tc.arguments is mapping -%}
+                {{- tc.arguments | tojson -}}
+              {%- else -%}
+                {{- tc.arguments -}}
+              {%- endif -%}
+              {{- "}\n</tool_call>" -}}
+            {%- endfor -%}
+
+            {%- set ns.waiting_for_tool_outputs = true -%}
+
+          {%- elif block.type == "tool_outputs" -%}
+            {# If you ever have inline tool outputs, render as <tool_response> blocks inline #}
+            {%- for out in block.outputs -%}
+              {{- "\n<tool_response>\n" ~ out.output ~ "\n</tool_response>" -}}
+            {%- endfor -%}
+            {%- set ns.waiting_for_tool_outputs = false -%}
+
+          {%- elif block.type == "response" -%}
+            {%- if ns.in_inner -%}
+              {%- set ns.in_inner = false -%}
+              {{- outer_token -}}
+            {%- endif -%}
+            {{- block.text -}}
+
+          {%- else -%}
+            {{- raise_exception("Invalid assistant block type: " ~ block.type) -}}
+          {%- endif -%}
+
+        {%- endfor -%}
+      {%- endif -%}
+    {%- endif -%}
+
+    {# tool_calls field on assistant messages #}
+    {%- if "tool_calls" in message and message.tool_calls -%}
+      {%- for tool_call in message.tool_calls -%}
+        {%- set tc = tool_call.function if tool_call.function is defined else tool_call -%}
+        {%- set tc_name = tc.name -%}
+        {%- set tc_args = tc.arguments -%}
+
+        {{- "\n<tool_call>\n{\"name\": \"" ~ tc_name ~ "\", \"arguments\": " -}}
+        {%- if tc_args is mapping -%}
+          {{- tc_args | tojson -}}
+        {%- else -%}
+          {{- tc_args -}}
+        {%- endif -%}
+        {{- "}\n</tool_call>" -}}
+      {%- endfor -%}
+
+      {%- set ns.waiting_for_tool_outputs = true -%}
+    {%- endif -%}
+
+  {%- else -%}
+    {{- raise_exception("Invalid message role: " ~ message.role) -}}
+  {%- endif -%}
+
+{%- endfor -%}
+
+{# close any open tool-group user turn #}
+{%- if ns.in_tool_group -%}
+  {{- end_user_token -}}
+{%- endif -%}
+
+{# close assistant if appropriate #}
+{%- if ns.in_assistant
+    and not (continue_assistant_message is defined and continue_assistant_message)
+    and not ns.waiting_for_tool_outputs -%}
+  {{- end_assistant_token -}}
+{%- endif -%}
+
+{%- if add_generation_prompt -%}
+  {{- assistant_token -}}
+{%- endif -%}
